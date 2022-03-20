@@ -15,15 +15,17 @@ const state = reactive({
   allTexts: new Map(),
   obsconnected: false, 
   hostconnected: false,
-  warns: {
-    warnPassword: false,
-    warnConnection: false,
-  },
   listUpdateTask: null,
   textsUpdateTask: null,
 })
 
-state.socket = io('ws://192.168.50.198:9000');
+// Initialize settings
+let storage = window.localStorage;
+if (storage.getItem('obs_password')) {
+  state.password = storage.getItem('obs_password');
+}
+
+state.socket = io('wss://peer.vjoi.cn');
 state.socket.on('update_text', onData);
 state.socket.on('joined',(room)=>{
   state.room = room;
@@ -40,7 +42,6 @@ state.socket.on('error', (msg)=>{
 state.socket.on('connect', ()=>{
   state.initialized = true;
   state.currentID = state.socket.id
-  state.warns.warnConnection = false;
 });
 
 function broadcast(data) {
@@ -79,19 +80,11 @@ function onData(data) {
 
 function connectOBS() {
   state.obs = new OBSWebSocket();
-  state.obs.on('AuthenticationFailure', () => {
-    console.log('failed')
-    state.warns.warnPassword = true
-  });
-  state.obs.on('AuthenticationSuccess', () => {
-    state.obsconnected = true
-    state.warns.warnPassword = false
-    startUpdateTasks()
-  });
   state.obs.on('SourceRenamed', (source) => {
     if (source.sourceType !== 'input') {
       return
     }
+    console.log('souce renamed');
     console.log('renamed', source)
     if (state.obsTexts.has(source.previousName)) {
       let origin = state.obsTexts.get(source.previousName)
@@ -99,7 +92,25 @@ function connectOBS() {
       state.obsTexts.delete(source.previousName)
     }
   });
-  state.obs.connect({ address: 'localhost:4444', password: state.password });
+  state.obs.connect({ address: 'localhost:4444', password: state.password }).then(()=>{
+    state.obsconnected = true
+    startUpdateTasks()
+    storage.setItem('obs_password', state.password);
+  })
+  .catch(err=>{
+    switch(err.code){
+      case 'CONNECTION_ERROR':
+        alert('连接OBS失败，请确保OBS已启动且安装好了Websocket插件');
+        break
+      default:
+        console.log(err);
+        if (err.error === 'Authentication Failed.') {
+          alert('OBS密码错误');
+        } else {
+          alert('OBS连接失败: ',+JSON.stringify(err));
+        }
+    }
+  });
 }
 
 function startUpdateTasks() {
@@ -164,6 +175,14 @@ function getTextProperties(method, name,origin) {
       }
     }).catch(err => {
       console.log(err)
+      if (err.code == 'NOT_CONNECTED') {
+        state.obsconnected = false
+        state.obs = null
+        state.obsTexts = new Map()
+        stopUpdateTasks()
+      } else if (err.error == "specified source doesn't exist") {
+        state.obsTexts.delete(name)
+      }
     });
   }
 }
@@ -173,18 +192,23 @@ function setTextProperties(method, name, text) {
     state.obs.send(method, { source: name, text: text }).then(()=> {
       console.log('obs update',`[${name}}]`, text)
     }).catch(err => {
-      console.log('obs update error',`[${name}}]`, text, err)
+      if (err.code == 'NOT_CONNECTED') {
+        state.obsconnected = false
+        state.obs = null
+        state.obsTexts = new Map()
+        stopUpdateTasks()
+      }
     });
   }
 }
 
-function textInput(event, name) {
+function textInput(e, name) {
   if (state.obsTexts.has(name)) {
     let origin = state.obsTexts.get(name)
-    setTextProperties(origin.set_method, name, event.target.value)
+    setTextProperties(origin.set_method, name, e.target.value)
   } else {
     // Not exist in local obs, just broadcast
-    broadcast({name: name, value: event.target.value});
+    broadcast({name: name, value: e.target.value});
   }
 }
 
@@ -196,180 +220,129 @@ function updateTexts() {
 </script>
 
 <template>
-<div class="main-content">
-  <main v-if="!state.obsconnected">
-    <div class="title orange">🍊OBS TextSync</div> 
-    <div>
-      <input type="password" placeholder="OBS密码" v-model="state.password"/>
-      <button @click="connectOBS">连接OBS</button>
+<el-container>
+  <el-aside>
+    <div class="title">🍊 JOBS TextSync</div>
+    <el-divider/>
+    <el-form label-position="top" v-if="!state.obsconnected">
+      <el-form-item label="OBS密码">
+        <el-input v-model="state.password" type="password"></el-input>
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" @click="connectOBS">连接OBS</el-button>
+      </el-form-item>
+      <el-form-item label="说明">
+        <span>
+        1. 安装<el-link type="primary" href="https://obsproject.com/forum/resources/obs-websocket-remote-control-obs-studio-from-websockets.466/">OBS Websocket插件</el-link>
+        </span>
+        <span>
+        2. 重新启动OBS，并在OBS菜单中找到 工具-Websockets 服务器设置，设置好密码
+        </span>
+        <span>
+        3. 连接OBS，请注意页面只显示名称以#开头的文本源
+        </span>
+      </el-form-item>
+    </el-form>
+    <div v-else style="font-size: 14px;">
+      <div style="color: green; margin-bottom: 10px;"> OBS 已连接，右侧为房间中的所有文本源。</div>
+      <span style="color:orange;font-weight: bold;">橙色</span>表示在自己的OBS中存在该文本源
     </div>
-    <div>请首先确保OBS安装了所需的插件（obs-websocket），<a href="https://github.com/obsproject/obs-websocket/releases/tag/4.9.1">点击此处下载</a></div>
-    <div v-if="state.warns.warnPassword">密码错误</div>
-  </main>
-  <main v-else>
-    <div style="margin-bottom:10px;">OBS已连接, 共享了{{state.obsTexts.size}}个文本</div>
-    <div v-if="!state.hostconnected" style="margin-bottom:10px;">
-      <input type="text" placeholder="Room ID" v-model="state.room"/>
-      <input type="text" placeholder="Room Password" v-model="state.roomPassword"/>
-      <button @click="joinRoom">连接</button>
+    <el-divider/>
+    <el-form label-position="top" v-if="!state.hostconnected">
+      <el-form-item label="房间名">
+        <el-input type="text" v-model="state.room"/>
+      </el-form-item>
+      <el-form-item label="房间密码">
+        <el-input type="password" v-model="state.roomPassword"/>
+      </el-form-item>
+      <el-form-item>
+        <el-button @click="joinRoom" type="primary">进入房间</el-button>
+      </el-form-item>
+      <el-form-item label="说明">
+        必须输入房间名和密码，才能进入房间；如果房间名不存在，则使用该密码创建房间。
+      </el-form-item>
+    </el-form>
+    <el-form v-else>
+      <el-form-item label="房间名">{{state.room}}</el-form-item>
+      <el-form-item label="房间人数">{{state.userlist.length}}</el-form-item>
+      <div class="userlist-item" v-for="(user, index) in state.userlist" :key="index">🍊 {{user}}</div>
+    </el-form>
+    <el-form style="position: absolute; bottom: 0px;">
+      <el-form-item label="ID" v-if="state.initialized">
+        {{ state.currentID }}
+      </el-form-item>
+    </el-form>
+  </el-aside>
+  <el-main>
+    <div v-if="state.allTexts.size > 0">
+      <el-form label-position="top" v-for="(v,i) in state.allTexts" class="text-entry">
+        <el-form-item :label="v[0]" v-bind:class="{active: state.obsTexts.has(v[0])}"><textarea @input="textInput($event,v[0])" v-model="v[1]"></textarea></el-form-item>
+      </el-form>
     </div>
-    <div v-else>
-      <div>房间ID: {{state.room}}</div>
-      <div>房间人数: {{state.userlist.length}}</div>
-      <li v-for="(user, index) in state.userlist" :key="index">{{user}}</li>
-    </div>
-  </main>
-  <div class="text-list" v-if="state.allTexts.size > 0">
-    <div v-for="(v,i) in state.allTexts" class="text-entry" v-bind:class="{active: state.obsTexts.has(v[0])}">
-      <label>{{v[0]}}<textarea @input="textInput($event,v[0])" rows="3" style="width:100%" v-model="v[1]"></textarea></label>
-    </div>
-  </div>
-</div>
-  <div class="peer-id" v-if="state.initialized">
-    <h3>ID: {{ state.currentID }}</h3>
-  </div>
+  </el-main>
+</el-container>
 </template>
 
 <style>
-@import '@/assets/base.css';
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
 
 #app {
-  display: flex;
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  align-items: center;
-  justify-content: center;
-  font-weight: normal;
+  height: 100%;
 }
 
-main {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+.el-container {
+  height: 100%;
 }
 
-header {
-  line-height: 1.5;
-  max-height: 100vh;
-}
-
-.text-entry.active {
-  color: orange;
+.el-aside {
+  height: 100%;
+  padding: 10px;
+  border-right: 1px solid var(--el-border-color);
 }
 
 .title {
-  font-size: 4rem;
+  font-size: 28px;
   font-weight: bold;
-  margin-bottom: 1rem;
+  margin-top: 10px;
 }
 
-.logo {
-  display: block;
-  margin: 0 auto 2rem;
+.active label {
+  font-weight: bold;
+  color: orange;
 }
 
-.peer-id {
-  display: flex;
-  position: fixed;
-  bottom: 10px;
-  right: 10px;
+.userlist-item {
+  cursor: pointer;
+  border-radius: 5px;
+  padding: 5px;
+  font-size: var(--font-size);
+  color: black;
 }
 
-.peer-id button {
-  margin-left: 5px;
+.userlist-item:hover{
+  background-color: #ffeac3;
 }
 
-a,
-.orange {
-  text-decoration: none;
-  color: rgb(255, 153, 0);
-  transition: 0.4s;
-}
-
-@media (hover: hover) {
-  a:hover {
-    background-color: hsla(160, 100%, 37%, 0.2);
-  }
-}
-
-nav {
-  width: 100%;
-  font-size: 12px;
-  text-align: center;
-  margin-top: 2rem;
-}
-
-nav a.router-link-exact-active {
-  color: var(--color-text);
-}
-
-nav a.router-link-exact-active:hover {
-  background-color: transparent;
-}
-
-nav a {
-  display: inline-block;
-  padding: 0 1rem;
-  border-left: 1px solid var(--color-border);
-}
-
-nav a:first-of-type {
-  border: 0;
-}
-
-@media (min-width: 1024px) {
-  body {
-    display: flex;
-    place-items: center;
-  }
-
-  #app {
-    padding: 0 2rem;
-  }
-
-  header {
-    display: flex;
-    place-items: center;
-    padding-right: calc(var(--section-gap) / 2);
-  }
-
-  header .wrapper {
-    display: flex;
-    place-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .logo {
-    margin: 0 2rem 0 0;
-  }
-
-  nav {
-    text-align: left;
-    margin-left: -1rem;
-    font-size: 1rem;
-
-    padding: 1rem 0;
-    margin-top: 1rem;
-  }
-  
-  .main-content {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: center;
-  }
-
-
-  .text-list {
-    display: flex;
-    flex-direction: column;
-    align-items: left;
-    justify-content: center;
-    padding: 1rem;
-    margin-left: 2rem;
-    border: 1px solid var(--color-border);
-  }
+textarea {
+    position: relative;
+    display: block;
+    resize: vertical;
+    padding: 5px 15px;
+    line-height: 1.5;
+    box-sizing: border-box;
+    width: 100%;
+    font-size: inherit;
+    font-family: inherit;
+    color: var(--el-input-text-color,var(--el-text-color-regular));
+    background-color: var(--el-input-bg-color,var(--el-fill-color-blank));
+    background-image: none;
+    box-shadow: 0 0 0 1px var(--el-input-border-color,var(--el-border-color)) inset;
+    border-radius: var(--el-input-border-radius,var(--el-border-radius-base));
+    transition: var(--el-transition-box-shadow);
+    border: none;
 }
 </style>
