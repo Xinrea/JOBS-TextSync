@@ -1,0 +1,25 @@
+{
+  "name": "obstextsync",
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --port 5050"
+  },
+  "dependencies": {
+    "buffer": "^6.0.3",
+    "events": "^3.3.0",
+    "peerjs": "^1.3.2",
+    "pinia": "^2.0.11",
+    "rollup-plugin-polyfill-node": "^0.8.0",
+    "socket.io-client": "^4.4.1",
+    "vue": "^3.2.31",
+    "vue-router": "^4.0.12"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^21.0.2",
+    "@vitejs/plugin-vue": "^2.2.2",
+    "@vitejs/plugin-vue-jsx": "^1.3.7",
+    "vite": "^2.8.4"
+  }
+}
